@@ -139,6 +139,113 @@ Score: 40/100
 make: *** [Makefile:234: grade] Error 1
 ```  
 
+## Primes  
+
+Concurrent programming to yield primes.  
+
+![](./primes.jpg)
+
+Create primes.c in user:
+```c
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+void children_process(int p[2]){
+    int prime;
+    int pp[2];
+    int num;
+    int len;//to figure out the return val of read;
+
+    close(p[1]);
+    len = read(p[0],&prime,sizeof(int));
+    if(len == 0){
+        close(p[0]);
+        exit(0);
+    }
+    printf("prime %d\n", prime);
+    pipe(pp);
+
+    if(fork()==0){
+        close(p[0]);
+        children_process(pp);
+    }else{
+        close(pp[0]);
+        while(1){
+            len = read(p[0],&num,sizeof(int));
+            if(len == 0)
+                break;
+            
+            if(num%prime !=0)
+                write(pp[1],&num,sizeof(int));
+        }
+        close(p[0]);
+        close(pp[1]);
+        wait(0);
+    }
+    exit(0);
+}
+
+int main(int argc, char** argv){
+    if(argc>1){
+        fprintf(2, "Usage: primes");
+        exit(1);
+    }
+
+    int i;
+    int p[2];
+    pipe(p);
+
+    if(fork()==0){
+        children_process(p);
+    }else{
+        close(p[0]);
+        for(i = 2;i<=35;i++)
+            write(p[1],&i,sizeof(int));
+        close(p[1]);
+        wait(0);
+    }
+    exit(0);
+}
+```
+
+Manually add this to Makefile:
+`$U/_primes\`  
+
+`make qemu`  
+```
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+init: starting sh
+$ primes
+prime 2
+prime 3
+prime 5
+prime 7
+prime 11
+prime 13
+prime 17
+prime 19
+prime 23
+prime 29
+prime 31
+$ QEMU: Terminated
+```
+`make grade`  
+```
+== Test primes == 
+$ make qemu-gdb
+primes: OK (1.0s) 
+    (Old xv6.out.primes failure log removed)
+
+
+== Test time == 
+time: FAIL 
+    Cannot read time.txt
+Score: 60/100
+make: *** [Makefile:235: grade] Error 1
+```
 
 
 
