@@ -14,7 +14,7 @@ Create a file named "sleep.c" in user.
 Just like: xv6-labs-2020/user/sleep.c  
 
 Code:
-```
+```c
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "user/user.h"
@@ -69,3 +69,76 @@ pingpong: FAIL (1.0s)
     
 Score: 20/100
 ```
+
+## PingPong 
+
+This is to write a program to teach how to use pipe(), fork().  
+
+Create a file named "pingpong.c" in user.  
+And then add these code to the file:  
+
+```c
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+
+int main(int argc, char** argv){
+    int p[2];
+    int pid;
+    char content;
+    if(argc>1){
+        printf("Usage: pingpong\n");
+        exit(1);
+    }
+    pipe(p);
+    if(fork()==0){
+        pid = getpid();
+        read(p[0],&content,1);
+        close(p[0]);
+        printf("%d: received ping\n", pid);
+        write(p[1], "0", 1);
+        close(p[1]);
+    }else{
+        pid = getpid();
+        write(p[1],"0",1);
+        close(p[1]);
+
+        wait(0);
+
+        read(p[0],&content,1);
+        close(p[0]);
+        printf("%d: received pong\n", pid);
+    }
+    exit(0);
+}
+```  
+
+Add this snippet to Makefile:  
+`$U/_pingpong\` just below the sleep.   
+`make qemu`   
+`pingpong`  
+```shell
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+init: starting sh
+$ pingpong
+4: received ping
+3: received pong
+$ QEMU: Terminated
+```
+`make grade`  
+```
+== Test pingpong == 
+$ make qemu-gdb
+pingpong: OK (1.0s) 
+    (Old xv6.out.pingpong failure log removed)  
+
+Score: 40/100
+make: *** [Makefile:234: grade] Error 1
+```  
+
+
+
+
