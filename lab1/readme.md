@@ -251,7 +251,7 @@ make: *** [Makefile:235: grade] Error 1
 
 Same as above: 
 
-```
+```c
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "user/user.h"
@@ -322,4 +322,124 @@ int main(int argc, char** argv){
 }
 ```
 
+```
+== Test find, in current directory == 
+$ make qemu-gdb
+find, in current directory: OK (1.1s) 
+== Test find, recursive == 
+$ make qemu-gdb
+find, recursive: OK (1.1s) 
 
+== Test time == 
+time: FAIL 
+    Cannot read time.txt
+Score: 80/100
+make: *** [Makefile:236: grade] Error 1
+```
+
+## xargs  
+
+First thing to do is to quickly glance at the usage of xargs:  
+[xargs](http://www.ruanyifeng.com/blog/2019/08/xargs-tutorial.html)  
+
+```c
+#include "kernel/types.h"
+#include "kernel/stat.h"
+#include "user/user.h"
+#include "kernel/fs.h"
+#include "kernel/param.h"
+
+int main(int argc, char *argv[])
+{
+  char buf[512];
+  char* full_argv[MAXARG];
+  int i;
+  int len;
+  if(argc < 2){
+    fprintf(2, "usage: xargs your_command\n");
+    exit(1);
+  }
+  
+  if (argc + 1 > MAXARG) {
+      fprintf(2, "too many args\n");
+      exit(1);
+  }
+  // copy the original args
+  // skip the first argument xargs
+  for (i = 1; i < argc; i++) {
+      full_argv[i-1] = argv[i];
+  }
+  // full_argv[argc-1] is the extra arg to be filled
+  // full_argv[argc] is the terminating zero
+  full_argv[argc] = 0;
+  while (1) {
+      i = 0;
+      // read a line
+      while (1) {
+        len = read(0,&buf[i],1);
+        if (len == 0 || buf[i] == '\n') break;
+        i++;
+      }
+      if (i == 0) break;
+      // terminating 0
+      buf[i] = 0;
+      full_argv[argc-1] = buf;
+      if (fork() == 0) {
+        // fork a child process to do the job
+        exec(full_argv[0],full_argv);
+        exit(0);
+      } else {
+        // wait for the child process to complete
+        wait(0);
+      }
+  }
+  exit(0);
+}
+```
+
+A brief picture that tell how the codes run:  
+![](./xargs.jpg)
+
+result:  
+
+```shell
+xv6 kernel is booting
+
+hart 2 starting
+hart 1 starting
+init: starting sh
+$ echo hello too | xargs echo bye
+bye hello to
+```
+
+Summary:  
+
+```
+== Test sleep, no arguments == 
+$ make qemu-gdb
+sleep, no arguments: OK (5.7s) 
+== Test sleep, returns == 
+$ make qemu-gdb
+sleep, returns: OK (1.0s) 
+== Test sleep, makes syscall == 
+$ make qemu-gdb
+sleep, makes syscall: OK (0.9s) 
+== Test pingpong == 
+$ make qemu-gdb
+pingpong: OK (1.1s) 
+== Test primes == 
+$ make qemu-gdb
+primes: OK (1.0s) 
+== Test find, in current directory == 
+$ make qemu-gdb
+find, in current directory: OK (1.0s) 
+== Test find, recursive == 
+$ make qemu-gdb
+find, recursive: OK (1.1s) 
+== Test xargs == 
+$ make qemu-gdb
+xargs: OK (1.1s) 
+== Test time == 
+time: OK 
+Score: 100/100
+```
