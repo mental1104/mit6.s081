@@ -181,3 +181,193 @@ if(found == 0) {
       asm volatile("wfi");
 }
 ```
+
+## Simplify
+
+core function:
+
+```c
+//vm.c
+void 
+u2kvmcopy(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz)
+{
+  pte_t* pte_from, *pte_to;
+  uint64 a, pa;
+  uint flags;
+
+  if(newsz < oldsz)
+    return;
+
+  oldsz = PGROUNDUP(oldsz);
+  for (a = oldsz; a < newsz; a += PGSIZE)
+  {
+    if((pte_from = walk(pagetable, a, 0)) == 0)
+      panic("u2kvmcopy: pte should exist");
+    if((pte_to = walk(kpagetable, a, 1)) == 0)
+      panic("u2kvmcopy: walk fails");
+    pa = PTE2PA(*pte_from);
+    flags = (PTE_FLAGS(*pte_from) & (~PTE_U));
+    *pte_to = PA2PTE(pa) | flags;
+  }
+}
+```
+
+Remeber to rip off PTE_U before entering kernel.
+
+Add its declaration into defs.h:
+
+```c
+//defs.h
+void            u2kvmcopy(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz);
+```
+
+And then we insert one single line into fork(), sbrk() and exec():
+
+sbrk():
+
+```c
+//proc.c
+int
+growproc(int n)
+{
+  ..............................
+  if(n > 0){
+    if(PGROUNDUP(sz + n) >= PLIC)
+      return -1;
+    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+    u2kvmcopy(p->pagetable, p->kpagetable, sz-n, sz);
+  } else if(n < 0){
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+  }
+  ............................
+}
+```
+
+fork():
+
+```c
+int fork(void){
+  ........................
+  np->cwd = idup(p->cwd);
+
+  u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  np->state = RUNNABLE;
+
+  release(&np->lock);
+  ..........................
+
+}
+```
+
+exec():
+
+```c
+//exec.c
+int
+exec(char *path, char **argv){
+  ....................
+  sp = sz;
+  stackbase = sp - PGSIZE;
+
+  u2kvmcopy(pagetable, p->kpagetable, 0, sz);
+
+  // Push argument strings, prepare rest of stack in ustack.
+  for(argc = 0; argv[argc]; argc++) {
+  ....................
+}
+```
+
+And userinit():
+
+```c
+//proc.c
+void
+userinit(void)
+{
+  ................................
+  uvminit(p->pagetable, initcode, sizeof(initcode));
+  p->sz = PGSIZE;
+
+  u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz);
+
+  // prepare for the very first "return" from kernel to user.
+  p->trapframe->epc = 0;      // user program counter
+  p->trapframe->sp = PGSIZE;  // user stack pointer
+
+ ....................................
+}
+```
+
+Finally, rewrite copyin and copyinstr_new.
+
+Actually, they've been already offered in vmcopyin.c. What we should do is create a new head file named vmcopyin.h and add their declarations like this:
+
+```c
+//vmcopyin.h
+int copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len);
+int copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max);
+```
+
+Then we rewrite the two functions:
+
+``````````````````````c
+`````````````````````
+#include "vmcopyin.h"
+`````````````````````
+int
+copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
+{
+  return copyin_new(pagetable, dst, srcva, len);
+}
+``````````````````````
+
+```c
+int
+copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+{
+  return copyinstr_new(pagetable, dst, srcva, max);
+}
+```
+
+All clear!
+
+And we should create two file named answers-pgtbl.txt and time.txt.
+
+This lab spent me nearly 12 hours.
+
+`make grade`
+
+```shell
+== Test pte printout == 
+$ make qemu-gdb
+pte printout: OK (5.3s) 
+== Test answers-pgtbl.txt == answers-pgtbl.txt: OK 
+== Test count copyin == 
+$ make qemu-gdb
+count copyin: OK (1.1s) 
+== Test usertests == 
+$ make qemu-gdb
+(83.0s) 
+== Test   usertests: copyin == 
+  usertests: copyin: OK 
+== Test   usertests: copyinstr1 == 
+  usertests: copyinstr1: OK 
+== Test   usertests: copyinstr2 == 
+  usertests: copyinstr2: OK 
+== Test   usertests: copyinstr3 == 
+  usertests: copyinstr3: OK 
+== Test   usertests: sbrkmuch == 
+  usertests: sbrkmuch: OK 
+== Test   usertests: all tests == 
+  usertests: all tests: OK 
+== Test time == 
+time: OK 
+Score: 66/66
+```
