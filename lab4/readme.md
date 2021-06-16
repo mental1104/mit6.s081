@@ -269,3 +269,287 @@ vprintf(int fd, const char *fmt, va_list ap)
 > So printf("x=%d y=%d", 3); when 3 is printed and the next %d will to be reaching the first address of stack.
 > 
 > It will print the content of a2, but no one could determine what the previous value of register a2. So the result is undefined.
+
+## Backtrace(Moderate)  
+
+1. Add the prototype for backtrace to kernel/defs.h so that you can invoke backtrace in sys_sleep.
+
+```c
+//kernel/defs.h
+void            backtrace();
+```
+
+2. Add the following function to kernel/riscv.h:
+
+```c
+//kernel/riscv.h
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x) );
+  return x;
+}
+```
+3. Implement the function
+
+> Since the stack frame is stored in a PAGESIZE, so we can think of its stack bottom line as PGROUNDUP(fp).  
+
+![](./4.png)
+
+```c
+void backtrace(){
+  uint64 fp = r_fp();
+  uint64 bottom = PGROUNDUP(fp);
+  printf("backtrace:\n");
+  while(1){
+    if(bottom == fp) break;
+    printf("%p\n",*(uint64 *)(fp-8));
+    fp = *(uint64*)(fp-16);
+  }
+}
+```
+
+4. Insert the function into sys_sleep:
+
+```c
+//kernel/sysproc.c
+uint64
+sys_sleep(void)
+{
+  ..................
+  backtrace();
+  release(&tickslock);
+  return 0;
+}
+```
+
+
+```shell
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+init: starting sh
+$ bttest
+backtrace:
+0x0000000080002d1c
+0x0000000080002b90
+0x000000008000287a
+```
+
+```shell
+== Test backtrace test == 
+$ make qemu-gdb
+backtrace test: OK (2.2s) 
+== Test running alarmtest == 
+$ make qemu-gdb
+(1.0s) 
+```
+
+## Alarm(hard)
+
+As usual, we should register two system call as what we did in [lab2](../lab2)
+
+```c
+int sigalarm(int ticks, void (*handler)());
+int sigreturn(void);
+```
+
+### test0: invoke handler
+
+we should add two different fields in the struct proc:
+
+```c
+struct proc {
+  ................
+  void (*handler)();
+  int alarm_interval;
+  int total_ticks;
+
+};
+```
+
+Also, we need to initialize the total_ticks variable in `allocproc`:
+```c
+//kernel/proc.c
+static struct proc*
+allocproc(void)
+{
+  ........
+found:
+  p->pid = allocpid();
+  p->total_ticks = 0;
+  ........
+  return p;
+}
+```
+Now we'll devel into the concrete implementation of two system calls:  
+
+```c
+//kernel/sysproc.c
+uint64
+sys_sigalarm(void)
+{
+    struct proc* p = myproc();
+    int n;
+    uint64 handler;
+
+    if(argint(0,&n) < 0)
+        return -1;
+    if(argaddr(1, &handler) < 0)
+        return -1;
+
+    //To fetech variables from a0 and a1 register.
+
+    p->handler = (void (*)())handler;
+    p->alarm_interval = n;
+    return 0;
+}
+```
+
+Yet sys_sigreturn just need to `return 0`:
+
+```c
+//kernel/sysproc.c
+uint64
+sys_sigreturn(void)
+{
+  return 0;
+}
+```
+
+`which_dev == 2` corresponds to timer_interrupt.  
+```c
+//kernel/trap.c
+if(which_dev == 2){
+    p->total_ticks++;
+    if(p->total_ticks == p->alarm_interval){
+        p->total_ticks = 0;
+        p->trapframe->epc = (uint64)p->handler;
+    }
+    yield();
+}
+```
+
+### test1/test2(): resume interrupted code
+
+This step needs we save and restore some register:
+
+save:
+```c
+if(which_dev == 2){
+    p->total_ticks++;
+    if(p->total_ticks == p->alarm_interval){
+
+        p->total_ticks = 0;
+
+        if(p->in_handler == 0){
+          p->epc = p->trapframe->epc;
+          p->ra = p->trapframe->ra;
+          p->sp = p->trapframe->sp;
+          p->gp = p->trapframe->gp;
+          p->tp = p->trapframe->tp;
+          p->t0 = p->trapframe->t0;
+          p->t1 = p->trapframe->t1;
+          p->t2 = p->trapframe->t2;
+          p->s0 = p->trapframe->s0;
+          p->s1 = p->trapframe->s1;
+          p->a0 = p->trapframe->a0;
+          p->a1 = p->trapframe->a1;
+          p->a2 = p->trapframe->a2;
+          p->a3 = p->trapframe->a3;
+          p->a4 = p->trapframe->a4;
+          p->a5 = p->trapframe->a5;
+          p->a6 = p->trapframe->a6;
+          p->a7 = p->trapframe->a7;
+          p->s2 = p->trapframe->s2;
+          p->s3 = p->trapframe->s3;
+          p->s4 = p->trapframe->s4;
+          p->s5 = p->trapframe->s5;
+          p->s6 = p->trapframe->s6;
+          p->s7 = p->trapframe->s7;
+          p->s8 = p->trapframe->s8;
+          p->s9 = p->trapframe->s9;
+          p->s10 = p->trapframe->s10;
+          p->s11 = p->trapframe->s11;
+          p->t3 = p->trapframe->t3;
+          p->t4 = p->trapframe->t4;
+          p->t5 = p->trapframe->t5;
+          p->t6 = p->trapframe->t6;
+
+          p->trapframe->epc = (uint64)p->handler;
+          p->in_handler = 1;
+        }    
+    }
+    yield();
+}
+```
+`in_handler` variable is used to indicate that it's in the handler, not to save register when the handler is launched(until the `sigreturn` is called).
+
+These code is used to restore our register:  
+
+```c
+uint64
+sys_sigreturn(void)
+{
+    struct proc* p = myproc();
+    p->trapframe->epc = p->epc;
+    p->trapframe->ra = p->ra;
+    p->trapframe->sp = p->sp;
+    p->trapframe->gp = p->gp;
+    p->trapframe->tp = p->tp;
+    p->trapframe->t0 = p->t0;
+    p->trapframe->t1 = p->t1;
+    p->trapframe->t2 = p->t2;
+    p->trapframe->s0 = p->s0;
+    p->trapframe->s1 = p->s1;
+    p->trapframe->a0 = p->a0;
+    p->trapframe->a1 = p->a1;
+    p->trapframe->a2 = p->a2;
+    p->trapframe->a3 = p->a3;
+    p->trapframe->a4 = p->a4;
+    p->trapframe->a5 = p->a5;
+    p->trapframe->a6 = p->a6;
+    p->trapframe->a7 = p->a7;
+    p->trapframe->s2 = p->s2;
+    p->trapframe->s3 = p->s3;
+    p->trapframe->s4 = p->s4;
+    p->trapframe->s5 = p->s5;
+    p->trapframe->s6 = p->s6;
+    p->trapframe->s7 = p->s7;
+    p->trapframe->s8 = p->s8;
+    p->trapframe->s9 = p->s9;
+    p->trapframe->s10 = p->s10;
+    p->trapframe->s11 = p->s11;
+    p->trapframe->t3 = p->t3;
+    p->trapframe->t4 = p->t4;
+    p->trapframe->t5 = p->t5;
+    p->trapframe->t6 = p->t6;
+    p->in_handler = 0;
+    return 0;
+}
+```
+
+```shell
+make grade
+== Test answers-traps.txt == answers-traps.txt: OK 
+== Test backtrace test == 
+$ make qemu-gdb
+backtrace test: OK (2.1s) 
+== Test running alarmtest == 
+$ make qemu-gdb
+(4.0s) 
+== Test   alarmtest: test0 == 
+  alarmtest: test0: OK 
+== Test   alarmtest: test1 == 
+  alarmtest: test1: OK 
+== Test   alarmtest: test2 == 
+  alarmtest: test2: OK 
+== Test usertests == 
+$ make qemu-gdb
+usertests: OK (78.8s) 
+== Test time == 
+time: OK 
+Score: 85/85
+```
