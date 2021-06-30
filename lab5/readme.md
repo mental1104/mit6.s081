@@ -109,6 +109,13 @@ hi
 
 ## Lazytests and Usertests (moderate)
 
+1. Handle negative sbrk() arguments.
+2. Kill a process if it page-faults on a virtual memory address higher than any allocated with sbrk().
+3. Handle the parent-to-child memory copy in fork() correctly.
+4. Handle the case in which a process passes a valid address from sbrk() to a system call such as read or write, but the memory for that address has not yet been allocated.
+5. Handle out-of-memory correctly: if kalloc() fails in the page fault handler, kill the current process.
+6. Handle faults on the invalid page below the user stack.
+
 To avoid deallocate more than the size it already have, we should check its value:  
 
 ```c
@@ -124,6 +131,7 @@ sys_sbrk(void)
   struct proc* p = myproc();
   addr = p->sz;
   if(n < 0){
+    //1. Handle negative sbrk() arguments.
     if(p->sz + n < 0) return -1;//n cannot beyond sz
     else 
       uvmdealloc(p->pagetable, p->sz, p->sz+n);
@@ -194,15 +202,20 @@ and it's beyond it's stack's top(remeber that stack is growing downward).
 } else if(r_scause() == 15 || r_scause() == 13){
       uint64 va = r_stval();
       if(va < p->sz && va > PGROUNDDOWN(p->trapframe->sp)){
+        //2, 6
         uint64 ka = (uint64) kalloc();
         if(ka == 0) p->killed = -1;
+        //5. Handle out-of-memory correctly: if kalloc() fails in the page fault handler, kill the current process.
         else{
           memset((void*)ka, 0, PGSIZE);
           if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, ka, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
             p->killed = -1;
           }
+          //4. Handle the case in which a process passes a valid address from sbrk() to a system call such as read or write, but the memory for that address has not yet been allocated.
         }
       }
+      //2. Kill a process if it page-faults on a virtual memory address higher than any allocated with sbrk().  
+      //6. Handle faults on the invalid page below the user stack.
       else p->killed = -1;
   } else if((which_dev = devintr()) != 0){
     // ok
@@ -219,6 +232,8 @@ if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     return -1;
 }
 //just for presentation
+
+//3. Handle the parent-to-child memory copy in fork() correctly.
 
 //kernel/vm.c
 int
