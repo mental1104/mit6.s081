@@ -1,4 +1,4 @@
-# Lab5 - traps
+# Lab5 - Lazy Page Allocation
 
 ```shell
   $ git fetch
